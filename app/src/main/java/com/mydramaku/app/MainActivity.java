@@ -6,7 +6,6 @@ import android.content.Intent;
 import android.net.Uri;
 import android.os.Bundle;
 import android.view.Window;
-import android.view.WindowManager;
 import android.view.KeyEvent;
 import android.view.View;
 import android.webkit.ValueCallback;
@@ -15,12 +14,13 @@ import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.widget.FrameLayout;
 import android.widget.ProgressBar;
 import android.widget.RelativeLayout;
 import androidx.appcompat.app.AppCompatActivity;
-import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowCompat;
+import androidx.core.view.WindowInsetsControllerCompat;
 import androidx.core.view.WindowInsetsCompat;
-import androidx.core.graphics.Insets;
 
 public class MainActivity extends AppCompatActivity {
 
@@ -33,6 +33,9 @@ public class MainActivity extends AppCompatActivity {
 
     private WebView webView;
     private ProgressBar progressBar;
+    private FrameLayout fullscreenContainer;
+    private View customView;
+    private WebChromeClient.CustomViewCallback customViewCallback;
     private static final int FILE_CHOOSER_REQUEST = 1;
     private ValueCallback<Uri[]> filePathCallback;
 
@@ -42,9 +45,16 @@ public class MainActivity extends AppCompatActivity {
         super.onCreate(savedInstanceState);
 
         Window window = getWindow();
-        window.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
-        window.setStatusBarColor(0xFF050506);
-        window.setNavigationBarColor(0xFF050506);
+
+        // Fullscreen immersive: konten WebView gambar sampai di belakang
+        // status bar & navigation bar, keduanya disembunyikan total.
+        // Swipe dari tepi layar buat munculin sementara (sticky immersive).
+        WindowCompat.setDecorFitsSystemWindows(window, false);
+        WindowInsetsControllerCompat controller =
+            new WindowInsetsControllerCompat(window, window.getDecorView());
+        controller.hide(WindowInsetsCompat.Type.systemBars());
+        controller.setSystemBarsBehavior(
+            WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
 
         RelativeLayout layout = new RelativeLayout(this);
         layout.setLayoutParams(new RelativeLayout.LayoutParams(
@@ -65,14 +75,18 @@ public class MainActivity extends AppCompatActivity {
 
         layout.addView(webView);
         layout.addView(progressBar);
-        setContentView(layout);
 
-        // Beri padding agar konten tidak tertimpa status bar & navbar
-        ViewCompat.setOnApplyWindowInsetsListener(layout, (v, insets) -> {
-            Insets bars = insets.getInsets(WindowInsetsCompat.Type.systemBars());
-            v.setPadding(bars.left, bars.top, bars.right, bars.bottom);
-            return WindowInsetsCompat.CONSUMED;
-        });
+        // Wadah kosong untuk menampung <video> saat masuk mode fullscreen
+        // (dipakai oleh onShowCustomView/onHideCustomView di bawah).
+        fullscreenContainer = new FrameLayout(this);
+        fullscreenContainer.setLayoutParams(new RelativeLayout.LayoutParams(
+            RelativeLayout.LayoutParams.MATCH_PARENT,
+            RelativeLayout.LayoutParams.MATCH_PARENT));
+        fullscreenContainer.setBackgroundColor(0xFF000000);
+        fullscreenContainer.setVisibility(View.GONE);
+        layout.addView(fullscreenContainer);
+
+        setContentView(layout);
 
         WebSettings s = webView.getSettings();
         s.setJavaScriptEnabled(true);
@@ -83,6 +97,7 @@ public class MainActivity extends AppCompatActivity {
         s.setAllowFileAccess(true);
         s.setCacheMode(WebSettings.LOAD_DEFAULT);
         s.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+        s.setMediaPlaybackRequiresUserGesture(false);
 
         webView.setWebViewClient(new WebViewClient() {
             @Override
@@ -114,6 +129,28 @@ public class MainActivity extends AppCompatActivity {
                 startActivityForResult(p.createIntent(), FILE_CHOOSER_REQUEST);
                 return true;
             }
+
+            // Tombol fullscreen di elemen <video> HTML5 masuk lewat sini.
+            // Tanpa ini, WebView diam saja waktu tombol fullscreen ditekan.
+            @Override
+            public void onShowCustomView(View view, CustomViewCallback callback) {
+                if (customView != null) {
+                    callback.onCustomViewHidden();
+                    return;
+                }
+                customView = view;
+                customViewCallback = callback;
+                webView.setVisibility(View.GONE);
+                fullscreenContainer.addView(view, new FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT));
+                fullscreenContainer.setVisibility(View.VISIBLE);
+            }
+
+            @Override
+            public void onHideCustomView() {
+                exitCustomView();
+            }
         });
 
         webView.loadUrl(APP_URL);
@@ -132,6 +169,10 @@ public class MainActivity extends AppCompatActivity {
 
     @Override
     public boolean onKeyDown(int keyCode, KeyEvent event) {
+        if (keyCode == KeyEvent.KEYCODE_BACK && customView != null) {
+            exitCustomView();
+            return true;
+        }
         if (keyCode == KeyEvent.KEYCODE_BACK && webView.canGoBack()) {
             webView.goBack();
             return true;
@@ -139,6 +180,26 @@ public class MainActivity extends AppCompatActivity {
         return super.onKeyDown(keyCode, event);
     }
 
+    private void exitCustomView() {
+        if (customView == null) return;
+        fullscreenContainer.setVisibility(View.GONE);
+        fullscreenContainer.removeView(customView);
+        webView.setVisibility(View.VISIBLE);
+        if (customViewCallback != null) customViewCallback.onCustomViewHidden();
+        customView = null;
+        customViewCallback = null;
+    }
+
     @Override protected void onPause() { super.onPause(); webView.onPause(); }
     @Override protected void onResume() { super.onResume(); webView.onResume(); }
+
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (hasFocus) {
+            WindowInsetsControllerCompat controller =
+                new WindowInsetsControllerCompat(getWindow(), getWindow().getDecorView());
+            controller.hide(WindowInsetsCompat.Type.systemBars());
+        }
+    }
 }
